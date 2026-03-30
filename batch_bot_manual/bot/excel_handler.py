@@ -27,7 +27,7 @@ class ExcelHandler:
         ext = self.file_path.suffix.lower()
 
         if ext in (".xlsx", ".xls"):
-            self.df = pd.read_excel(self.file_path, dtype=str)
+            self.df = pd.read_excel(self.file_path, dtype=str, engine="openpyxl")
         elif ext == ".csv":
             self.df = pd.read_csv(self.file_path, dtype=str)
         else:
@@ -40,11 +40,9 @@ class ExcelHandler:
         if config.COL_STATUS not in self.df.columns:
             self.df[config.COL_STATUS] = "Pending"
 
-        # Fill any blank Status cells with "Pending"
-        self.df[config.COL_STATUS].fillna("Pending", inplace=True)
-        self.df[config.COL_STATUS] = (
-            self.df[config.COL_STATUS].str.strip()
-        )
+        # FIX #1: Replace deprecated fillna(inplace=True) with direct assignment
+        self.df[config.COL_STATUS] = self.df[config.COL_STATUS].fillna("Pending")
+        self.df[config.COL_STATUS] = self.df[config.COL_STATUS].str.strip()
 
     def reload(self):
         """Re-read file from disk (useful after external edits)."""
@@ -79,7 +77,7 @@ class ExcelHandler:
 
     def mark_failed(self, index: int, reason: str = ""):
         """Mark a row as failed, optionally recording the reason."""
-        msg = f"Failed" + (f": {reason}" if reason else "")
+        msg = "Failed" + (f": {reason}" if reason else "")
         self.df.at[index, config.COL_STATUS] = msg
         self._save()
 
@@ -91,10 +89,16 @@ class ExcelHandler:
     # ── Persistence ───────────────────────────────────────────
 
     def _save(self):
-        """Write the DataFrame back to the original file."""
+        """
+        Write the DataFrame back to the original file.
+
+        FIX #2: Always specify engine='openpyxl' for .xlsx/.xls so that
+        openpyxl is used explicitly, preventing silent engine-mismatch
+        errors on some pandas versions.
+        """
         ext = self.file_path.suffix.lower()
         if ext in (".xlsx", ".xls"):
-            self.df.to_excel(self.file_path, index=False)
+            self.df.to_excel(self.file_path, index=False, engine="openpyxl")
         elif ext == ".csv":
             self.df.to_csv(self.file_path, index=False)
 

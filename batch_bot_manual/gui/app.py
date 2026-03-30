@@ -219,7 +219,7 @@ class BatchBotApp(tk.Tk):
         self._continue_btn.pack(side="left", padx=(8, 0))
 
         # Captcha mode indicator (right side)
-        tk.Label(frm, text=f"Captcha mode: ", bg=SURFACE,
+        tk.Label(frm, text="Captcha mode: ", bg=SURFACE,
                  fg=TEXT_DIM, font=("Segoe UI", 9)).pack(side="right", padx=(0, 2))
         mode_color = {
             "demo": WARNING, "ocr": ACCENT, "api": SUCCESS
@@ -321,6 +321,17 @@ class BatchBotApp(tk.Tk):
             messagebox.showwarning("No File", "Please select an Excel file first.")
             return
 
+        # FIX #10: Guard against starting a second bot thread while
+        # the first is still alive. This prevents race conditions on the
+        # Excel file and driver instance when the user clicks Start twice.
+        if self._bot_thread and self._bot_thread.is_alive():
+            messagebox.showwarning(
+                "Bot Running",
+                "A batch is already running.\n"
+                "Please stop it first before starting a new one."
+            )
+            return
+
         self._paused = False
         self._set_controls_state("running")
         self._log_append("─" * 55, "info")
@@ -354,6 +365,9 @@ class BatchBotApp(tk.Tk):
     def _continue_captcha(self):
         if self._bot:
             self._bot.continue_captcha()
+        # FIX #9: Disable the button immediately after click so it
+        # cannot be double-clicked. It will be re-enabled automatically
+        # when the next record enters captcha-wait state via _log_append.
         self._continue_btn.config(state="disabled")
 
     def _stop(self):
@@ -380,7 +394,15 @@ class BatchBotApp(tk.Tk):
         self._progress_label.config(
             text=f"Processing record {current} of {total}  ({pct}%)"
         )
-        self._populate_table()   # live status update
+        # FIX #11: Refresh the table EVERY time progress fires so that
+        # status changes (written to df before this callback is triggered)
+        # are always visible immediately in the GUI.
+        self._populate_table()
+
+        # FIX #9 (part 2): Reset the Continue button to disabled at the
+        # start of each new record. _log_append will re-enable it if
+        # the record enters captcha-wait mode.
+        self._continue_btn.config(state="disabled")
 
     def _log_append(self, msg: str, tag: str = ""):
         self._log_text.configure(state="normal")

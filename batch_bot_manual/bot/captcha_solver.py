@@ -106,10 +106,11 @@ class CaptchaSolver:
         log("[CAPTCHA] ⏳ Manual captcha mode — type the captcha in the "
             "browser, then click 'Continue' in the GUI.")
 
-        # Step 2 — block until "Continue" is clicked in the GUI
+        # FIX #8: Always clear the event BEFORE waiting, so a leftover
+        # set() from the previous record doesn't cause an instant pass-through.
         if self._ready_event is not None:
-            self._ready_event.wait()
-            self._ready_event.clear()
+            self._ready_event.clear()   # ← reset first
+            self._ready_event.wait()    # ← then block until GUI clicks Continue
         else:
             log("[CAPTCHA] No ready_event wired — reading field immediately.")
 
@@ -144,8 +145,13 @@ class CaptchaSolver:
                 return ""
 
             png_bytes = captcha_img.screenshot_as_png
-            img = Image.open(io.BytesIO(png_bytes)).convert("L")  # greyscale
-            img = img.point(lambda p: 255 if p > 140 else 0)      # binarise
+            img = Image.open(io.BytesIO(png_bytes)).convert("L")   # greyscale
+
+            # FIX #7: Upscale 2× before binarizing — Tesseract performs
+            # significantly better on larger images. Threshold raised to 160
+            # (from 140) to reduce false-dark noise on light captchas.
+            img = img.resize((img.width * 2, img.height * 2), Image.LANCZOS)
+            img = img.point(lambda p: 255 if p > 160 else 0)       # binarise
 
             text = pytesseract.image_to_string(
                 img,

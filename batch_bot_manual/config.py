@@ -3,18 +3,19 @@
 # ─────────────────────────────────────────────
 
 # ── Captcha Mode ──────────────────────────────
+# Options: "demo" | "ocr" | "api"
 CAPTCHA_MODE = "demo"
 
 # ── Manual Captcha (only used when CAPTCHA_MODE = "demo") ─────
 # Set to True to pause and let the user solve the captcha manually
-# in the browser, then press Enter in the terminal (or click
-# "Continue" in the GUI) to resume.
+# in the browser, then click "Continue" in the GUI to resume.
+# Set to False to use a dummy placeholder (for dry-run testing only).
 MANUAL_CAPTCHA = True
 
-# ── API Keys (only used when CAPTCHA_MODE = "api") ────────────────────────────
+# ── API Keys (only used when CAPTCHA_MODE = "api") ────────────
 TWOCAPTCHA_API_KEY  = "YOUR_2CAPTCHA_KEY_HERE"
 ANTICAPTCHA_API_KEY = "YOUR_ANTICAPTCHA_KEY_HERE"
-API_SERVICE = "2captcha"
+API_SERVICE = "2captcha"   # "2captcha" or "anticaptcha"
 
 # ── Selenium Browser ──────────────────────────
 BROWSER  = "chrome"
@@ -24,9 +25,11 @@ HEADLESS = False
 FORM_URL = "https://form.jotform.com/260231667243453"
 
 # ── Timing (seconds) ──────────────────────────
-PAGE_LOAD_WAIT  = 10
-SUBMIT_WAIT     = 8
-BETWEEN_RECORDS = 2
+# FIX #12: Increased from 10→15 and 8→12 to handle slow connections
+# and JotForm's heavier JS rendering time.
+PAGE_LOAD_WAIT  = 15   # wait for page/elements to appear
+SUBMIT_WAIT     = 12   # wait for confirmation page after submit
+BETWEEN_RECORDS = 2    # pause between consecutive records
 
 # ── Excel column names ────────────────────────
 COL_FIRST_NAME        = "FirstName"
