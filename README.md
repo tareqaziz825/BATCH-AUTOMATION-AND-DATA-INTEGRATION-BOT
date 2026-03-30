@@ -79,7 +79,7 @@ batch_bot/
 **1. Clone the repository**
 
 ```bash
-git clone https://github.com/your-username/batch-bot.git
+git clone https://github.com/tareqaziz825/BATCH-AUTOMATION-AND-DATA-INTEGRATION-BOT.git
 cd batch-bot
 ```
 
