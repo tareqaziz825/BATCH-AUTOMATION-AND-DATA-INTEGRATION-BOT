@@ -314,26 +314,11 @@ class BatchBot:
                 self._log("[BOT] Warning: captcha text empty — retrying ...")
                 time.sleep(1)
 
-        # In manual mode the user has already typed the captcha into the
-        # browser field. We must NOT call _fill_by_id (which clears first)
-        # because get_attribute("value") can return "" on JS-masked inputs,
-        # which would wipe what the user typed.  Instead we leave the field
-        # as-is — the user's typed value is already there.
-        # In OCR / API modes we always have the solved text, so a normal
-        # clear-and-type is safe and correct.
+        # In manual mode the user already typed into the field;
+        # _fill_by_id (clear + send_keys) safely overwrites it with
+        # the value we read back, keeping the field consistent.
         if captcha_text:
-            is_manual = (
-                config.CAPTCHA_MODE == "demo"
-                and getattr(config, "MANUAL_CAPTCHA", False)
-            )
-            if is_manual:
-                # Field already contains the user's input — don't clear it.
-                # Only re-type if we actually read a non-empty value back,
-                # using the no-clear helper to avoid overwriting a valid entry.
-                if captcha_text:
-                    self._fill_by_id_no_clear(ID_CAPTCHA, captcha_text)
-            else:
-                self._fill_by_id(ID_CAPTCHA, captcha_text)
+            self._fill_by_id(ID_CAPTCHA, captcha_text)
         else:
             self._log("[BOT] Warning: captcha text still empty after all attempts — submitting anyway.")
 
@@ -351,20 +336,6 @@ class BatchBot:
         el = self.driver.find_element(By.ID, element_id)
         self._scroll_into_view(el)
         el.clear()
-        el.send_keys(value)
-
-    def _fill_by_id_no_clear(self, element_id: str, value: str):
-        """
-        Scroll into view and type into a field WITHOUT clearing it first.
-        Used for the captcha input in manual mode: the user has already
-        typed the answer, so we must not call el.clear() which would wipe
-        their input if get_attribute('value') returned an empty string.
-        If value is non-empty it is appended; if empty this is a no-op.
-        """
-        if not value:
-            return
-        el = self.driver.find_element(By.ID, element_id)
-        self._scroll_into_view(el)
         el.send_keys(value)
 
     def _js_fill(self, element_id: str, value: str):

@@ -29,7 +29,7 @@ FORM_URL = "https://form.jotform.com/260231667243453"
 # and JotForm's heavier JS rendering time.
 PAGE_LOAD_WAIT  = 15   # wait for page/elements to appear
 SUBMIT_WAIT     = 12   # wait for confirmation page after submit
-BETWEEN_RECORDS = 5    # pause between consecutive records (keep ≥5 to avoid rate-limiting)
+BETWEEN_RECORDS = 2    # pause between consecutive records
 
 # ── Excel column names ────────────────────────
 COL_FIRST_NAME        = "FirstName"

@@ -9,30 +9,15 @@
 from selenium import webdriver
 from selenium.webdriver.common.by import By
 from selenium.webdriver.chrome.options import Options
-from selenium.webdriver.chrome.service import Service as ChromeService
 from selenium.webdriver.support.ui import WebDriverWait
 from selenium.webdriver.support import expected_conditions as EC
 import time
-
-# Use webdriver-manager to auto-download the correct ChromeDriver version
-try:
-    from webdriver_manager.chrome import ChromeDriverManager
-    _WDM_AVAILABLE = True
-except ImportError:
-    _WDM_AVAILABLE = False
 
 FORM_URL = "https://form.jotform.com/260231667243453"
 
 opts = Options()
 opts.add_argument("--window-size=1280,900")
-
-if _WDM_AVAILABLE:
-    driver = webdriver.Chrome(
-        service=ChromeService(ChromeDriverManager().install()),
-        options=opts,
-    )
-else:
-    driver = webdriver.Chrome(options=opts)
+driver = webdriver.Chrome(options=opts)
 
 try:
     driver.get(FORM_URL)

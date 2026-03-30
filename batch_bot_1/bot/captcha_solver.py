@@ -132,11 +132,6 @@ class CaptchaSolver:
         Screenshots the captcha <img> element and runs Tesseract OCR on it.
         Requires:  pip install pytesseract Pillow
                    + Tesseract binary installed on the OS
-
-        NOTE: JotForm uses heavily distorted image captchas. Tesseract OCR
-        has low accuracy (~20-40%) on these. This mode is provided for
-        experimentation only. For reliable automation use CAPTCHA_MODE="api"
-        (2Captcha / AntiCaptcha) or CAPTCHA_MODE="demo" (manual solve).
         """
         if not _PIL_AVAILABLE:
             log("[CAPTCHA] pytesseract/Pillow not installed. Falling back to demo.")
