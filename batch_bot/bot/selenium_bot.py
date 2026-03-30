@@ -321,19 +321,18 @@ class BatchBot:
         # as-is — the user's typed value is already there.
         # In OCR / API modes we always have the solved text, so a normal
         # clear-and-type is safe and correct.
-        if captcha_text:
-            is_manual = (
-                config.CAPTCHA_MODE == "demo"
-                and getattr(config, "MANUAL_CAPTCHA", False)
-            )
-            if is_manual:
-                # Field already contains the user's input — don't clear it.
-                # Only re-type if we actually read a non-empty value back,
-                # using the no-clear helper to avoid overwriting a valid entry.
-                if captcha_text:
-                    self._fill_by_id_no_clear(ID_CAPTCHA, captcha_text)
-            else:
-                self._fill_by_id(ID_CAPTCHA, captcha_text)
+        is_manual = (
+            config.CAPTCHA_MODE == "demo"
+            and getattr(config, "MANUAL_CAPTCHA", False)
+        )
+        if is_manual:
+            # The user already typed the captcha directly into the browser
+            # field. Do NOT touch it — any write here would append to the
+            # existing value and produce duplicates like "blackblack".
+            pass
+        elif captcha_text:
+            # OCR / API / dry-run: field is empty, safe to fill normally.
+            self._fill_by_id(ID_CAPTCHA, captcha_text)
         else:
             self._log("[BOT] Warning: captcha text still empty after all attempts — submitting anyway.")
 
