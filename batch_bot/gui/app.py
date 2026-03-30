@@ -210,8 +210,16 @@ class BatchBotApp(tk.Tk):
         )
         self._stop_btn.pack(side="left")
 
+        self._continue_btn = tk.Button(
+            frm, text="✅  Continue", command=self._continue_captcha,
+            bg=SUCCESS, fg="white",
+            activebackground="#3a9a6a", activeforeground="white",
+            **btn_cfg
+        )
+        self._continue_btn.pack(side="left", padx=(8, 0))
+
         # Captcha mode indicator (right side)
-        tk.Label(frm, text=f"Captcha mode: ", bg=SURFACE,
+        tk.Label(frm, text="Captcha mode: ", bg=SURFACE,
                  fg=TEXT_DIM, font=("Segoe UI", 9)).pack(side="right", padx=(0, 2))
         mode_color = {
             "demo": WARNING, "ocr": ACCENT, "api": SUCCESS
@@ -313,6 +321,17 @@ class BatchBotApp(tk.Tk):
             messagebox.showwarning("No File", "Please select an Excel file first.")
             return
 
+        # FIX #10: Guard against starting a second bot thread while
+        # the first is still alive. This prevents race conditions on the
+        # Excel file and driver instance when the user clicks Start twice.
+        if self._bot_thread and self._bot_thread.is_alive():
+            messagebox.showwarning(
+                "Bot Running",
+                "A batch is already running.\n"
+                "Please stop it first before starting a new one."
+            )
+            return
+
         self._paused = False
         self._set_controls_state("running")
         self._log_append("─" * 55, "info")
@@ -343,6 +362,14 @@ class BatchBotApp(tk.Tk):
             self._pause_btn.config(text="⏸  Pause")
             self._log_append("Resumed.", "info")
 
+    def _continue_captcha(self):
+        if self._bot:
+            self._bot.continue_captcha()
+        # FIX #9: Disable the button immediately after click so it
+        # cannot be double-clicked. It will be re-enabled automatically
+        # when the next record enters captcha-wait state via _log_append.
+        self._continue_btn.config(state="disabled")
+
     def _stop(self):
         if self._bot:
             self._bot.stop()
@@ -367,7 +394,15 @@ class BatchBotApp(tk.Tk):
         self._progress_label.config(
             text=f"Processing record {current} of {total}  ({pct}%)"
         )
-        self._populate_table()   # live status update
+        # FIX #11: Refresh the table EVERY time progress fires so that
+        # status changes (written to df before this callback is triggered)
+        # are always visible immediately in the GUI.
+        self._populate_table()
+
+        # FIX #9 (part 2): Reset the Continue button to disabled at the
+        # start of each new record. _log_append will re-enable it if
+        # the record enters captcha-wait mode.
+        self._continue_btn.config(state="disabled")
 
     def _log_append(self, msg: str, tag: str = ""):
         self._log_text.configure(state="normal")
@@ -383,6 +418,13 @@ class BatchBotApp(tk.Tk):
             else:
                 tag = "info"
 
+        # Switch GUI to "captcha" state when the bot is waiting for manual solve
+        if "manual captcha mode" in msg.lower():
+            self._set_controls_state("captcha")
+        # Switch back to running once the bot confirms it's continuing
+        elif "captcha confirmed" in msg.lower():
+            self._set_controls_state("running")
+
         self._log_text.insert("end", msg + "\n", tag)
         self._log_text.see("end")
         self._log_text.configure(state="disabled")
@@ -393,11 +435,13 @@ class BatchBotApp(tk.Tk):
 
     def _set_controls_state(self, state: str):
         """
-        state: "idle"    → Start disabled, Pause disabled, Stop disabled
-               "ready"   → Start enabled,  Pause disabled, Stop disabled
-               "running" → Start disabled, Pause enabled,  Stop enabled
+        state: "idle"    → Start disabled, Pause disabled, Stop disabled, Continue disabled
+               "ready"   → Start enabled,  Pause disabled, Stop disabled, Continue disabled
+               "running" → Start disabled, Pause enabled,  Stop enabled,  Continue disabled
+               "captcha" → Start disabled, Pause disabled, Stop enabled,  Continue enabled
         """
         s = state.lower()
-        self._start_btn.config(state="normal" if s == "ready"   else "disabled")
-        self._pause_btn.config(state="normal" if s == "running" else "disabled")
-        self._stop_btn .config(state="normal" if s == "running" else "disabled")
+        self._start_btn.config(   state="normal" if s == "ready"   else "disabled")
+        self._pause_btn.config(   state="normal" if s == "running" else "disabled")
+        self._stop_btn.config(    state="normal" if s in ("running", "captcha") else "disabled")
+        self._continue_btn.config(state="normal" if s == "captcha" else "disabled")

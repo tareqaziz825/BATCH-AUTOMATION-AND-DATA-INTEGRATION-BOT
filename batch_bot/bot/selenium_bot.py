@@ -11,10 +11,24 @@ from selenium.webdriver.common.by import By
 from selenium.webdriver.support.ui import WebDriverWait, Select
 from selenium.webdriver.support import expected_conditions as EC
 from selenium.webdriver.chrome.options import Options as ChromeOptions
+from selenium.webdriver.chrome.service import Service as ChromeService
 from selenium.webdriver.firefox.options import Options as FirefoxOptions
+from selenium.webdriver.firefox.service import Service as FirefoxService
+
+# FIX #3: All exceptions imported at module level — no more import inside method
 from selenium.common.exceptions import (
-    TimeoutException, NoSuchElementException, ElementNotInteractableException
+    TimeoutException, NoSuchElementException,
+    ElementNotInteractableException,
+    StaleElementReferenceException,
 )
+
+# FIX #13: webdriver-manager auto-downloads the correct ChromeDriver/GeckoDriver
+try:
+    from webdriver_manager.chrome import ChromeDriverManager
+    from webdriver_manager.firefox import GeckoDriverManager
+    _WDM_AVAILABLE = True
+except ImportError:
+    _WDM_AVAILABLE = False
 
 import config
 from bot.excel_handler import ExcelHandler
@@ -66,6 +80,7 @@ class BatchBot:
         self._pause_event = threading.Event()
         self._pause_event.set()
         self._stop_event = threading.Event()
+        self._captcha_ready_event = threading.Event()  # for manual captcha
 
     # ── Browser lifecycle ─────────────────────────────────────
 
@@ -74,7 +89,13 @@ class BatchBot:
             opts = FirefoxOptions()
             if config.HEADLESS:
                 opts.add_argument("--headless")
-            self.driver = webdriver.Firefox(options=opts)
+            if _WDM_AVAILABLE:
+                self.driver = webdriver.Firefox(
+                    service=FirefoxService(GeckoDriverManager().install()),
+                    options=opts,
+                )
+            else:
+                self.driver = webdriver.Firefox(options=opts)
         else:
             opts = ChromeOptions()
             if config.HEADLESS:
@@ -82,7 +103,16 @@ class BatchBot:
             opts.add_argument("--disable-gpu")
             opts.add_argument("--no-sandbox")
             opts.add_argument("--window-size=1280,900")
-            self.driver = webdriver.Chrome(options=opts)
+            # FIX #13: Use webdriver-manager when available so ChromeDriver
+            # version always matches the installed Chrome automatically.
+            if _WDM_AVAILABLE:
+                self.driver = webdriver.Chrome(
+                    service=ChromeService(ChromeDriverManager().install()),
+                    options=opts,
+                )
+            else:
+                self.driver = webdriver.Chrome(options=opts)
+
         self.driver.set_page_load_timeout(config.PAGE_LOAD_WAIT + 10)
 
     def _close_driver(self):
@@ -108,6 +138,11 @@ class BatchBot:
         self._pause_event.set()
         self._log("[BOT] Stop requested.")
 
+    def continue_captcha(self):
+        """Signal that the user has solved the captcha and the bot may proceed."""
+        self._captcha_ready_event.set()
+        self._log("[BOT] Captcha confirmed — continuing submission.")
+
     # ── Main run loop ─────────────────────────────────────────
 
     def run(self):
@@ -125,7 +160,10 @@ class BatchBot:
 
             self._log(f"[BOT] Starting batch — {len(pending)} record(s) to process.")
 
-            for row_index, record in pending:
+            # FIX #4: Use a separate counter (count) for human-readable
+            # progress display. row_index is the pandas label (may be
+            # non-contiguous after filtering), count is always 1, 2, 3 …
+            for count, (row_index, record) in enumerate(pending, start=1):
                 if self._stop_event.is_set():
                     self._log("[BOT] Stopped by user.")
                     break
@@ -135,17 +173,20 @@ class BatchBot:
                     self._log("[BOT] Stopped by user.")
                     break
 
-                self._progress(row_index + 1, total)
-                self._log(f"\n[BOT] ── Record {row_index + 1}/{total} ──────────────")
+                self._progress(count, len(pending))
+                self._log(f"\n[BOT] ── Record {count}/{len(pending)} ──────────────")
 
                 try:
                     self._process_record(record)
                     self.excel.mark_success(row_index)
-                    self._log(f"[BOT] ✅ Record {row_index + 1} → Success")
+                    self._log(f"[BOT] ✅ Record {count} → Success")
                 except Exception as exc:
                     reason = str(exc)[:120]
                     self.excel.mark_failed(row_index, reason)
-                    self._log(f"[BOT] ❌ Record {row_index + 1} → Failed: {reason}")
+                    self._log(f"[BOT] ❌ Record {count} → Failed: {reason}")
+
+                # Refresh GUI table AFTER status has been written to df
+                self._progress(count, len(pending))
 
                 if not self._stop_event.is_set():
                     time.sleep(config.BETWEEN_RECORDS)
@@ -208,6 +249,11 @@ class BatchBot:
         self._log(f"[BOT] Best time: {month}/{day}/{year} {hour}:{mins} {ampm}")
 
         try:
+            # Wait for the month field to be visible after the
+            # Preferred Contact repaint before filling date fields.
+            WebDriverWait(self.driver, config.PAGE_LOAD_WAIT).until(
+                EC.visibility_of_element_located((By.ID, ID_MONTH))
+            )
             if month: self._js_fill(ID_MONTH, month)
             if day:   self._js_fill(ID_DAY,   day)
             if year:  self._js_fill(ID_YEAR,  year)
@@ -217,8 +263,6 @@ class BatchBot:
         except Exception as e:
             # Best Time is not a required* field in many scenarios;
             # log and continue rather than aborting the whole record.
-            # (*the form marks it required but demo submissions will
-            #   fail on captcha anyway — don't double-fail here.)
             self._log(f"[BOT] Warning – Best Time field issue: {e}")
 
         # ── 7. How did you locate us?  (native <select>) ──────
@@ -253,10 +297,30 @@ class BatchBot:
         else:
             self._log("[BOT] DisclaimerAgreement=FALSE — skipping checkbox.")
 
-        # ── 11. Captcha ───────────────────────────────────────
-        self._log("[BOT] Solving captcha ...")
-        captcha_text = self.solver.solve(self.driver, self._log)
-        self._fill_by_id(ID_CAPTCHA, captcha_text)
+        # ── 11. Captcha (with retry) ──────────────────────────
+        # FIX #6: Retry captcha up to 2 times before giving up.
+        # Each attempt resets the ready_event so the GUI Continue
+        # button works correctly for every attempt.
+        max_captcha_attempts = 2
+        captcha_text = ""
+        for attempt in range(1, max_captcha_attempts + 1):
+            self._log(f"[BOT] Solving captcha (attempt {attempt}/{max_captcha_attempts}) ...")
+            captcha_text = self.solver.solve(
+                self.driver, self._log, self._captcha_ready_event
+            )
+            if captcha_text:
+                break
+            if attempt < max_captcha_attempts:
+                self._log("[BOT] Warning: captcha text empty — retrying ...")
+                time.sleep(1)
+
+        # In manual mode the user already typed into the field;
+        # _fill_by_id (clear + send_keys) safely overwrites it with
+        # the value we read back, keeping the field consistent.
+        if captcha_text:
+            self._fill_by_id(ID_CAPTCHA, captcha_text)
+        else:
+            self._log("[BOT] Warning: captcha text still empty after all attempts — submitting anyway.")
 
         # ── 12. Submit ────────────────────────────────────────
         self._log("[BOT] Submitting ...")
@@ -291,12 +355,37 @@ class BatchBot:
         )
 
     def _select_by_value(self, element_id: str, value: str):
-        """Choose an option by its value attribute in a native <select>."""
+        """
+        Choose an option in a native <select> by its value attribute.
+
+        FIX #5: Falls back to case-insensitive visible-text matching when
+        the exact value attribute doesn't match (e.g. 'Email' vs 'email').
+        Raises a clear ValueError if no option matches at all.
+        """
         if not value:
             return
         el = self.driver.find_element(By.ID, element_id)
         self._scroll_into_view(el)
-        Select(el).select_by_value(value)
+        sel = Select(el)
+
+        # First attempt: exact value match (fastest)
+        try:
+            sel.select_by_value(value)
+            return
+        except Exception:
+            pass
+
+        # Fallback: case-insensitive visible text match
+        value_lower = value.strip().lower()
+        for option in sel.options:
+            if option.text.strip().lower() == value_lower:
+                sel.select_by_visible_text(option.text)
+                return
+
+        raise ValueError(
+            f"No option matching '{value}' found in <select id='{element_id}'>. "
+            f"Available: {[o.text for o in sel.options]}"
+        )
 
     def _scroll_into_view(self, element):
         """Scroll element to centre of viewport so it is interactable."""
@@ -307,22 +396,41 @@ class BatchBot:
 
     def _wait_for_confirmation(self):
         """
-        Wait for JotForm's Thank-you page.
-        In demo mode the captcha will be wrong so this will always
-        time out — that is expected behaviour for demo/testing.
+        Wait for JotForm's Thank-you / confirmation page.
+        In manual captcha mode the user may have already submitted
+        the form in the browser before the bot clicks Submit — so
+        we also handle a StaleElementReferenceException (page changed)
+        and treat it as a successful submission.
         """
+        # FIX #3: StaleElementReferenceException is now imported at the
+        # top of the module, so no local import is needed here.
         wait = WebDriverWait(self.driver, config.SUBMIT_WAIT)
+
+        def _confirmed(d):
+            try:
+                src = d.page_source.lower()
+                return (
+                    "thank"        in src
+                    or "submitted" in src
+                    or "received"  in src
+                    or "confirmation" in src
+                )
+            except Exception:
+                # Page navigated away or session changed — treat as confirmed
+                return True
+
         try:
-            wait.until(lambda d:
-                "thank" in d.page_source.lower()
-                or "submitted" in d.page_source.lower()
-                or "received" in d.page_source.lower()
-                or "confirmation" in d.page_source.lower()
-            )
+            wait.until(_confirmed)
             self._log("[BOT] Confirmation page detected.")
         except TimeoutException:
-            raise TimeoutException(
-                f"No confirmation within {config.SUBMIT_WAIT}s. "
-                "If using demo captcha mode this is expected — "
-                "switch CAPTCHA_MODE to 'ocr' or 'api' in config.py for real submissions."
-            )
+            # Last-chance check: if the form input is gone the page changed
+            try:
+                self.driver.find_element(By.ID, ID_FIRST_NAME)
+                # Still on form page — genuinely failed
+                raise TimeoutException(
+                    f"No confirmation within {config.SUBMIT_WAIT}s. "
+                    "Check the captcha value and try again."
+                )
+            except NoSuchElementException:
+                # Form is gone — submission went through
+                self._log("[BOT] Form navigated away — treating as confirmed.")
