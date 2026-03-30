@@ -1,6 +1,7 @@
 # ─────────────────────────────────────────────────────────────
 #  bot/captcha_solver.py  –  Captcha solving in 3 modes:
-#    "demo"  → dummy text (for UI/flow testing)
+#    "demo"  → manual solve by user (MANUAL_CAPTCHA=True)
+#              or dummy text (MANUAL_CAPTCHA=False)
 #    "ocr"   → Tesseract OCR on the captcha image
 #    "api"   → 2Captcha or AntiCaptcha paid service
 # ─────────────────────────────────────────────────────────────
@@ -29,8 +30,8 @@ class CaptchaSolver:
 
     def __init__(self, mode: str = None):
         self.mode = (mode or config.CAPTCHA_MODE).lower()
-        self._driver      = None          # set per solve() call
-        self._ready_event = None          # threading.Event wired by the GUI
+        self._driver      = None   # set per solve() call
+        self._ready_event = None   # threading.Event wired by the GUI
 
     # ── Public API ────────────────────────────────────────────
 
@@ -42,8 +43,8 @@ class CaptchaSolver:
         ----------
         driver       : Selenium WebDriver already on the form page
         log_callback : optional callable(str) to push messages to the GUI log
-        ready_event  : optional threading.Event; when set by the GUI's
-                       "Continue" button the manual-captcha wait unblocks.
+        ready_event  : optional threading.Event; set by the GUI "Continue"
+                       button to unblock the manual-captcha wait.
 
         Returns
         -------
@@ -70,56 +71,58 @@ class CaptchaSolver:
 
     def _demo_solve(self, log) -> str:
         """
-        If config.MANUAL_CAPTCHA is True:
-            - Scrolls the captcha field into view in the browser
-            - Pauses and waits for the user to type the captcha and
-              signal "done" via self._ready_event (set by the GUI's
-              "Continue" button, or immediately if no event is wired).
-            - Reads back whatever the user typed into the captcha field.
-        If config.MANUAL_CAPTCHA is False:
-            - Returns the hard-coded dummy string "DEMO123".
+        MANUAL_CAPTCHA = True  (default):
+          1. Scrolls the captcha field into view and clears it.
+          2. Waits — user types the captcha in the browser, then clicks
+             "Continue" in the GUI.
+          3. Reads the field value IMMEDIATELY (while the form page is
+             still open, before any navigation), then returns it.
+             selenium_bot will re-type it via _fill_by_id, which is safe
+             because _fill_by_id clears + sends_keys, keeping the value.
+
+        MANUAL_CAPTCHA = False:
+          Returns the hard-coded dummy string "DEMO123".
         """
         if not getattr(config, "MANUAL_CAPTCHA", False):
             log("[CAPTCHA] Demo mode → returning placeholder text.")
             return "DEMO123"
 
         # ── Manual path ───────────────────────────────────────
-        log("[CAPTCHA] ⏳ Manual captcha mode — solve it in the browser, "
-            "then click 'Continue' in the GUI.")
+        from selenium.webdriver.common.by import By
 
-        # The driver reference is stored in self._driver (set in solve())
         driver = self._driver
+
+        # Step 1 — scroll captcha field into view and clear it
         if driver:
             try:
-                from selenium.webdriver.common.by import By
                 el = driver.find_element(By.ID, "input_4")
                 driver.execute_script(
                     "arguments[0].scrollIntoView({block:'center'});", el
                 )
-                # Clear any stale value so the field is ready to type in
                 el.clear()
             except Exception as e:
-                log(f"[CAPTCHA] Warning: could not scroll to captcha field: {e}")
+                log(f"[CAPTCHA] Warning: could not prepare captcha field: {e}")
 
-        # Block until the GUI signals "Continue" (or fall through immediately
-        # if no event was provided — e.g. when running headless/terminal).
+        log("[CAPTCHA] ⏳ Manual captcha mode — type the captcha in the "
+            "browser, then click 'Continue' in the GUI.")
+
+        # Step 2 — block until "Continue" is clicked in the GUI
         if self._ready_event is not None:
             self._ready_event.wait()
             self._ready_event.clear()
         else:
             log("[CAPTCHA] No ready_event wired — reading field immediately.")
 
-        # Read back what the user typed
+        # Step 3 — read what the user typed (page is still open here)
+        val = ""
         if driver:
             try:
-                from selenium.webdriver.common.by import By
-                val = driver.find_element(By.ID, "input_4").get_attribute("value")
+                val = driver.find_element(By.ID, "input_4").get_attribute("value") or ""
                 log(f"[CAPTCHA] Read captcha value: '{val}'")
-                return val or ""
             except Exception as e:
                 log(f"[CAPTCHA] Warning: could not read captcha field: {e}")
 
-        return ""
+        return val
 
     # ── Mode: ocr ─────────────────────────────────────────────
 
@@ -135,18 +138,13 @@ class CaptchaSolver:
 
         log("[CAPTCHA] OCR mode → capturing captcha image …")
         try:
-            # JotForm renders the captcha inside an <img> with class 'hasImg'
-            # or inside the captcha widget iframe.  Try both selectors.
             captcha_img = self._find_captcha_element(driver)
             if captcha_img is None:
                 log("[CAPTCHA] Could not locate captcha image element.")
                 return ""
 
-            # Grab a PNG screenshot of just that element
             png_bytes = captcha_img.screenshot_as_png
             img = Image.open(io.BytesIO(png_bytes)).convert("L")  # greyscale
-
-            # Light preprocessing to improve OCR accuracy
             img = img.point(lambda p: 255 if p > 140 else 0)      # binarise
 
             text = pytesseract.image_to_string(
@@ -194,7 +192,6 @@ class CaptchaSolver:
     # ── 2Captcha integration ──────────────────────────────────
 
     def _solve_2captcha(self, b64_image: str, log) -> str:
-        # Submit image
         resp = requests.post(
             "http://2captcha.com/in.php",
             data={
@@ -214,8 +211,7 @@ class CaptchaSolver:
         captcha_id = data["request"]
         log(f"[CAPTCHA] Submitted to 2Captcha (id={captcha_id}). Polling …")
 
-        # Poll for result
-        for _ in range(24):          # max ~120 s
+        for _ in range(24):
             time.sleep(5)
             poll = requests.get(
                 "http://2captcha.com/res.php",
@@ -243,7 +239,6 @@ class CaptchaSolver:
     # ── AntiCaptcha integration ───────────────────────────────
 
     def _solve_anticaptcha(self, b64_image: str, log) -> str:
-        # Create task
         resp = requests.post(
             "https://api.anti-captcha.com/createTask",
             json={

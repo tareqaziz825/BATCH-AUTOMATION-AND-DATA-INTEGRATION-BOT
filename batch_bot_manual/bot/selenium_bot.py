@@ -214,6 +214,11 @@ class BatchBot:
         self._log(f"[BOT] Best time: {month}/{day}/{year} {hour}:{mins} {ampm}")
 
         try:
+            # Wait for the month field to be visible after the
+            # Preferred Contact repaint before filling date fields.
+            WebDriverWait(self.driver, config.PAGE_LOAD_WAIT).until(
+                EC.visibility_of_element_located((By.ID, ID_MONTH))
+            )
             if month: self._js_fill(ID_MONTH, month)
             if day:   self._js_fill(ID_DAY,   day)
             if year:  self._js_fill(ID_YEAR,  year)
@@ -264,7 +269,14 @@ class BatchBot:
         captcha_text = self.solver.solve(
             self.driver, self._log, self._captcha_ready_event
         )
-        self._fill_by_id(ID_CAPTCHA, captcha_text)
+        # In manual mode the user already typed into the field;
+        # _fill_by_id (clear + send_keys) safely overwrites it with
+        # the value we read back, keeping the field consistent.
+        # Skip only if captcha_text is empty (read failed).
+        if captcha_text:
+            self._fill_by_id(ID_CAPTCHA, captcha_text)
+        else:
+            self._log("[BOT] Warning: captcha text is empty — submitting anyway.")
 
         # ── 12. Submit ────────────────────────────────────────
         self._log("[BOT] Submitting ...")
@@ -315,22 +327,40 @@ class BatchBot:
 
     def _wait_for_confirmation(self):
         """
-        Wait for JotForm's Thank-you page.
-        In demo mode the captcha will be wrong so this will always
-        time out — that is expected behaviour for demo/testing.
+        Wait for JotForm's Thank-you / confirmation page.
+        In manual captcha mode the user may have already submitted
+        the form in the browser before the bot clicks Submit — so
+        we also handle a StaleElementReferenceException (page changed)
+        and treat it as a successful submission.
         """
+        from selenium.common.exceptions import StaleElementReferenceException
         wait = WebDriverWait(self.driver, config.SUBMIT_WAIT)
+
+        def _confirmed(d):
+            try:
+                src = d.page_source.lower()
+                return (
+                    "thank" in src
+                    or "submitted" in src
+                    or "received" in src
+                    or "confirmation" in src
+                )
+            except Exception:
+                # Page navigated away or session changed — treat as confirmed
+                return True
+
         try:
-            wait.until(lambda d:
-                "thank" in d.page_source.lower()
-                or "submitted" in d.page_source.lower()
-                or "received" in d.page_source.lower()
-                or "confirmation" in d.page_source.lower()
-            )
+            wait.until(_confirmed)
             self._log("[BOT] Confirmation page detected.")
         except TimeoutException:
-            raise TimeoutException(
-                f"No confirmation within {config.SUBMIT_WAIT}s. "
-                "If using demo captcha mode this is expected — "
-                "switch CAPTCHA_MODE to 'ocr' or 'api' in config.py for real submissions."
-            )
+            # Last-chance check: if the form input is gone the page changed
+            try:
+                self.driver.find_element(By.ID, ID_FIRST_NAME)
+                # Still on form page — genuinely failed
+                raise TimeoutException(
+                    f"No confirmation within {config.SUBMIT_WAIT}s. "
+                    "Check the captcha value and try again."
+                )
+            except NoSuchElementException:
+                # Form is gone — submission went through
+                self._log("[BOT] Form navigated away — treating as confirmed.")
